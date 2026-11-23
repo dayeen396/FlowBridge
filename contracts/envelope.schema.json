@@ -1,0 +1,35 @@
+{
+  "$defs": {
+    "Item": {
+      "additionalProperties": false,
+      "description": "One record flowing between nodes. `data` is always a JSON object.",
+      "properties": {
+        "data": {
+          "additionalProperties": true,
+          "title": "Data",
+          "type": "object"
+        }
+      },
+      "title": "Item",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The ONLY thing nodes pass to each other.",
+  "properties": {
+    "items": {
+      "items": {
+        "$ref": "#/$defs/Item"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "meta": {
+      "additionalProperties": true,
+      "title": "Meta",
+      "type": "object"
+    }
+  },
+  "title": "Envelope",
+  "type": "object"
+}

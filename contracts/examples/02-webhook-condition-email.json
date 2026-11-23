@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "name": "Big order alert",
+  "description": "Webhook receives an order. Orders over 1000 trigger an email, the rest are logged over HTTP.",
+  "nodes": [
+    {"id": "hook", "type": "webhook", "name": "Order received", "params": {"http_method": "POST"}, "position": {"x": 0, "y": 160}},
+    {"id": "shape", "type": "data_processing", "name": "Shape order",
+     "params": {"operation": "set", "fields": {"customer": "{{ item.body.customer }}", "amount": "{{ item.body.amount }}"}},
+     "position": {"x": 240, "y": 160}},
+    {"id": "check", "type": "condition", "name": "Amount > 1000",
+     "params": {"left": "{{ item.amount }}", "operator": "gt", "right": 1000},
+     "position": {"x": 480, "y": 160}},
+    {"id": "mail", "type": "send_email", "name": "Email sales",
+     "params": {"credential_id": "REPLACE_WITH_CREDENTIAL_ID", "to": "sales@example.com",
+                "subject": "Big order from {{ item.customer }}", "body": "Amount: {{ item.amount }}"},
+     "position": {"x": 740, "y": 60}, "on_error": "continue",
+     "retry": {"max_attempts": 3, "backoff_seconds": 5, "backoff_multiplier": 2}},
+    {"id": "log", "type": "http_request", "name": "Log small order",
+     "params": {"method": "POST", "url": "https://example.com/log", "body": {"customer": "{{ item.customer }}"}},
+     "position": {"x": 740, "y": 260}}
+  ],
+  "edges": [
+    {"id": "e1", "source": "hook", "target": "shape"},
+    {"id": "e2", "source": "shape", "target": "check"},
+    {"id": "e3", "source": "check", "source_handle": "true", "target": "mail"},
+    {"id": "e4", "source": "check", "source_handle": "false", "target": "log"}
+  ]
+}

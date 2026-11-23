@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "name": "Ask an MCP tool, then email the answer",
+  "description": "Calls a tool exposed by a connected MCP server and emails the result.",
+  "nodes": [
+    {"id": "trigger", "type": "manual_trigger", "name": "Start",
+     "params": {"sample_data": {"query": "latest FastAPI release"}}, "position": {"x": 0, "y": 100}},
+    {"id": "search", "type": "mcp_tool", "name": "Search tool",
+     "params": {"server_id": "REPLACE_WITH_MCP_SERVER_ID", "tool_name": "search", "arguments": {"query": "{{ item.query }}"}},
+     "position": {"x": 260, "y": 100}, "timeout_seconds": 60},
+    {"id": "mail", "type": "send_email", "name": "Email result",
+     "params": {"credential_id": "REPLACE_WITH_CREDENTIAL_ID", "to": "me@example.com",
+                "subject": "MCP result", "body": "{{ item.content }}"},
+     "position": {"x": 520, "y": 100}}
+  ],
+  "edges": [
+    {"id": "e1", "source": "trigger", "target": "search"},
+    {"id": "e2", "source": "search", "target": "mail"}
+  ]
+}

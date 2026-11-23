@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "name": "Fetch a joke and tidy it",
+  "description": "Manual trigger -> HTTP request -> keep only two fields.",
+  "nodes": [
+    {"id": "trigger", "type": "manual_trigger", "name": "Start", "params": {}, "position": {"x": 0, "y": 120}},
+    {"id": "fetch", "type": "http_request", "name": "Get joke",
+     "params": {"method": "GET", "url": "https://official-joke-api.appspot.com/random_joke"},
+     "position": {"x": 260, "y": 120},
+     "retry": {"max_attempts": 3, "backoff_seconds": 2, "backoff_multiplier": 2}, "timeout_seconds": 15},
+    {"id": "tidy", "type": "data_processing", "name": "Keep setup and punchline",
+     "params": {"operation": "set", "fields": {"setup": "{{ item.body.setup }}", "punchline": "{{ item.body.punchline }}"}},
+     "position": {"x": 520, "y": 120}}
+  ],
+  "edges": [
+    {"id": "e1", "source": "trigger", "target": "fetch"},
+    {"id": "e2", "source": "fetch", "target": "tidy"}
+  ]
+}

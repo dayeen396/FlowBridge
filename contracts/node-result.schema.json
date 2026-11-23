@@ -1,0 +1,113 @@
+{
+  "$defs": {
+    "Envelope": {
+      "additionalProperties": false,
+      "description": "The ONLY thing nodes pass to each other.",
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/Item"
+          },
+          "title": "Items",
+          "type": "array"
+        },
+        "meta": {
+          "additionalProperties": true,
+          "title": "Meta",
+          "type": "object"
+        }
+      },
+      "title": "Envelope",
+      "type": "object"
+    },
+    "ErrorCode": {
+      "enum": [
+        "VALIDATION_ERROR",
+        "EXPRESSION_ERROR",
+        "HTTP_ERROR",
+        "EMAIL_ERROR",
+        "MCP_ERROR",
+        "CREDENTIAL_ERROR",
+        "TIMEOUT",
+        "NODE_ERROR",
+        "INTERNAL"
+      ],
+      "title": "ErrorCode",
+      "type": "string"
+    },
+    "Item": {
+      "additionalProperties": false,
+      "description": "One record flowing between nodes. `data` is always a JSON object.",
+      "properties": {
+        "data": {
+          "additionalProperties": true,
+          "title": "Data",
+          "type": "object"
+        }
+      },
+      "title": "Item",
+      "type": "object"
+    },
+    "NodeError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "details": {
+          "additionalProperties": true,
+          "title": "Details",
+          "type": "object"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "NodeError",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "What a node's execute() returns.\n\n`outputs` maps an output handle (\"main\", \"true\", \"false\", ...) to an Envelope.\nA handle that is ABSENT is inactive: nodes wired only to it are skipped.",
+  "properties": {
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NodeError"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "outputs": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Envelope"
+      },
+      "title": "Outputs",
+      "type": "object"
+    },
+    "status": {
+      "default": "success",
+      "enum": [
+        "success",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "title": "NodeResult",
+  "type": "object"
+}

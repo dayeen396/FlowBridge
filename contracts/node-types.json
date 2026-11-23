@@ -1,0 +1,294 @@
+[
+  {
+    "category": "trigger",
+    "description": "Start the workflow with a button.",
+    "is_trigger": true,
+    "label": "Manual Trigger",
+    "outputs": [
+      "main"
+    ],
+    "params_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "sample_data": {
+          "additionalProperties": true,
+          "description": "Data emitted when run manually.",
+          "title": "Sample Data",
+          "type": "object"
+        }
+      },
+      "title": "ManualTriggerParams",
+      "type": "object"
+    },
+    "type": "manual_trigger"
+  },
+  {
+    "category": "trigger",
+    "description": "Start the workflow from an HTTP request.",
+    "is_trigger": true,
+    "label": "Webhook",
+    "outputs": [
+      "main"
+    ],
+    "params_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "http_method": {
+          "default": "POST",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE"
+          ],
+          "title": "Http Method",
+          "type": "string"
+        }
+      },
+      "title": "WebhookParams",
+      "type": "object"
+    },
+    "type": "webhook"
+  },
+  {
+    "category": "action",
+    "description": "Call any HTTP API.",
+    "is_trigger": false,
+    "label": "HTTP Request",
+    "outputs": [
+      "main"
+    ],
+    "params_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "default": null,
+          "title": "Body"
+        },
+        "fail_on_error_status": {
+          "default": true,
+          "description": "Treat HTTP status >= 400 as a failure.",
+          "title": "Fail On Error Status",
+          "type": "boolean"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Headers",
+          "type": "object"
+        },
+        "method": {
+          "default": "GET",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "query": {
+          "additionalProperties": true,
+          "title": "Query",
+          "type": "object"
+        },
+        "url": {
+          "description": "Full URL. Supports {{ expressions }}.",
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "HttpRequestParams",
+      "type": "object"
+    },
+    "type": "http_request"
+  },
+  {
+    "category": "logic",
+    "description": "Set, pick, rename or parse fields.",
+    "is_trigger": false,
+    "label": "Data Processing",
+    "outputs": [
+      "main"
+    ],
+    "params_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "fields": {
+          "additionalProperties": true,
+          "description": "set: name -> value. rename: old -> new.",
+          "title": "Fields",
+          "type": "object"
+        },
+        "keys": {
+          "description": "pick: keys to keep.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Keys",
+          "type": "array"
+        },
+        "operation": {
+          "default": "set",
+          "enum": [
+            "set",
+            "pick",
+            "rename",
+            "parse_json"
+          ],
+          "title": "Operation",
+          "type": "string"
+        },
+        "source_key": {
+          "default": "",
+          "description": "parse_json: key holding a JSON string.",
+          "title": "Source Key",
+          "type": "string"
+        }
+      },
+      "title": "DataProcessingParams",
+      "type": "object"
+    },
+    "type": "data_processing"
+  },
+  {
+    "category": "logic",
+    "description": "Route items to the true or false branch.",
+    "is_trigger": false,
+    "label": "Condition",
+    "outputs": [
+      "true",
+      "false"
+    ],
+    "params_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "left": {
+          "description": "Usually an expression, e.g. {{ item.amount }}.",
+          "title": "Left"
+        },
+        "operator": {
+          "default": "equals",
+          "enum": [
+            "equals",
+            "not_equals",
+            "contains",
+            "gt",
+            "gte",
+            "lt",
+            "lte",
+            "is_empty",
+            "is_not_empty"
+          ],
+          "title": "Operator",
+          "type": "string"
+        },
+        "right": {
+          "default": null,
+          "title": "Right"
+        }
+      },
+      "required": [
+        "left"
+      ],
+      "title": "ConditionParams",
+      "type": "object"
+    },
+    "type": "condition"
+  },
+  {
+    "category": "action",
+    "description": "Send an email over SMTP.",
+    "is_trigger": false,
+    "label": "Send Email",
+    "outputs": [
+      "main"
+    ],
+    "params_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "title": "Body",
+          "type": "string"
+        },
+        "credential_id": {
+          "description": "Saved SMTP credential.",
+          "title": "Credential Id",
+          "type": "string"
+        },
+        "from_address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "From Address"
+        },
+        "subject": {
+          "title": "Subject",
+          "type": "string"
+        },
+        "to": {
+          "title": "To",
+          "type": "string"
+        }
+      },
+      "required": [
+        "credential_id",
+        "to",
+        "subject",
+        "body"
+      ],
+      "title": "SendEmailParams",
+      "type": "object"
+    },
+    "type": "send_email"
+  },
+  {
+    "category": "integration",
+    "description": "Call a tool on a connected MCP server.",
+    "is_trigger": false,
+    "label": "MCP Tool",
+    "outputs": [
+      "main"
+    ],
+    "params_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "description": "Validated against the tool's own input schema, cached from the server.",
+          "title": "Arguments",
+          "type": "object"
+        },
+        "server_id": {
+          "description": "A saved MCP server.",
+          "title": "Server Id",
+          "type": "string"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "server_id",
+        "tool_name"
+      ],
+      "title": "McpToolParams",
+      "type": "object"
+    },
+    "type": "mcp_tool"
+  }
+]
