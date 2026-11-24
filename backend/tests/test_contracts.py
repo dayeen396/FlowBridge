@@ -51,7 +51,7 @@ def test_examples_match_json_schema(path):
 
 
 def test_example_count():
-    assert len(EXAMPLES) == 3
+    assert len(EXAMPLES) == 4
 
 
 def test_every_node_type_has_a_spec_and_an_example_or_catalog_entry():

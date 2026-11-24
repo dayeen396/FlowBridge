@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "name": "Order triage demo",
+  "description": "A self-contained demo that transforms a sample order and routes it by total.",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "manual_trigger",
+      "name": "Sample order",
+      "params": {
+        "sample_data": {
+          "order": {
+            "id": "ORD-1042",
+            "customer": "Ava",
+            "total": 1250
+          }
+        }
+      },
+      "position": { "x": 100, "y": 220 },
+      "retry": { "max_attempts": 1, "backoff_seconds": 2, "backoff_multiplier": 2 },
+      "timeout_seconds": 30,
+      "on_error": "stop"
+    },
+    {
+      "id": "shape_order",
+      "type": "data_processing",
+      "name": "Prepare order fields",
+      "params": {
+        "operation": "set",
+        "fields": {
+          "order_id": "{{ item.order.id }}",
+          "customer": "{{ item.order.customer }}",
+          "total": "{{ item.order.total }}"
+        }
+      },
+      "position": { "x": 400, "y": 220 },
+      "retry": { "max_attempts": 1, "backoff_seconds": 2, "backoff_multiplier": 2 },
+      "timeout_seconds": 30,
+      "on_error": "stop"
+    },
+    {
+      "id": "check_total",
+      "type": "condition",
+      "name": "Total over 1000?",
+      "params": { "left": "{{ item.total }}", "operator": "gt", "right": 1000 },
+      "position": { "x": 700, "y": 220 },
+      "retry": { "max_attempts": 1, "backoff_seconds": 2, "backoff_multiplier": 2 },
+      "timeout_seconds": 30,
+      "on_error": "stop"
+    },
+    {
+      "id": "high_value",
+      "type": "data_processing",
+      "name": "Flag for review",
+      "params": { "operation": "set", "fields": { "priority": "review" } },
+      "position": { "x": 1000, "y": 100 },
+      "retry": { "max_attempts": 1, "backoff_seconds": 2, "backoff_multiplier": 2 },
+      "timeout_seconds": 30,
+      "on_error": "stop"
+    },
+    {
+      "id": "standard_value",
+      "type": "data_processing",
+      "name": "Mark as standard",
+      "params": { "operation": "set", "fields": { "priority": "standard" } },
+      "position": { "x": 1000, "y": 340 },
+      "retry": { "max_attempts": 1, "backoff_seconds": 2, "backoff_multiplier": 2 },
+      "timeout_seconds": 30,
+      "on_error": "stop"
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger", "source_handle": "main", "target": "shape_order", "target_handle": "main" },
+    { "id": "e2", "source": "shape_order", "source_handle": "main", "target": "check_total", "target_handle": "main" },
+    { "id": "e3", "source": "check_total", "source_handle": "true", "target": "high_value", "target_handle": "main" },
+    { "id": "e4", "source": "check_total", "source_handle": "false", "target": "standard_value", "target_handle": "main" }
+  ]
+}

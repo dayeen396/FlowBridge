@@ -30,11 +30,21 @@ Errors always look like `{ "error": { "code": "...", "message": "...", "issues":
 | POST | `/hooks/{token}` (any method) | Webhook trigger | No auth, token is the secret. `202 { execution_id }`. Optional `Idempotency-Key`. |
 | POST | `/workflows/{id}/webhook-token/rotate` | New token | Old URL stops working. |
 | GET / POST / DELETE | `/credentials` | Manage credentials | Responses never include secret fields. |
-| GET / POST / DELETE | `/mcp-servers` | Manage MCP servers | POST connects and caches the tool list. |
+| GET / POST / DELETE | `/mcp-servers` | Manage MCP servers | POST connects and caches the tool list. Supports `streamable_http` and `sse`; optional `credential_id` references an `mcp_auth` credential. |
 | POST | `/mcp-servers/{id}/refresh` | Re-fetch tools | |
 | GET | `/mcp-servers/{id}/tools` | Cached tools | `[{name, description, input_schema}]` |
 
-Implemented in the Step 3 API: GitHub OAuth/session authentication, node catalog, workflow CRUD,
-manual execution queueing, and execution detail/list reads. The worker claims only `queued`
-executions, runs the frozen definition snapshot, and stores each node attempt in `node_runs`.
-Webhook delivery and the credential/MCP management routes remain future work.
+The API supports GitHub OAuth/session authentication, node catalog, workflow CRUD, manual execution,
+webhook delivery, execution history, and SMTP credential management. Webhook tokens are generated per
+workflow, can be rotated, and are returned only in the authenticated workflow detail. Webhooks accept
+the configured method, return `202`, and optionally deduplicate requests with `Idempotency-Key`.
+SMTP credentials are created with `POST /credentials` using `{ "name": "Mail", "type": "smtp",
+"data": { "host": "smtp.example.com", "port": 587, "username": "...", "password": "...",
+"starttls": true, "from_address": "..." } }`; list responses never include credential data.
+The worker claims only queued executions, runs the frozen definition snapshot, stores each node
+attempt, and applies per-node plus `FLOWBRIDGE_RUN_TIMEOUT_SECONDS` total timeouts.
+MCP server records are scoped to the signed-in user. `POST /mcp-servers` connects before saving; refresh replaces
+the cached tool list and schemas after a successful `tools/list`. MCP auth credentials can contain either a
+`bearer_token` or a `headers` object and are encrypted like SMTP credentials. The node editor reads the cached
+schemas to render each selected tool's argument fields. MCP connections use the official Python SDK over
+Streamable HTTP or SSE; stdio is intentionally unsupported.

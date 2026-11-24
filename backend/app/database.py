@@ -6,9 +6,9 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, create_engine, func, text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, LargeBinary, String, Text, create_engine, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PostgreSQLUUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, synonym
 from sqlalchemy.orm import Session
 
 DATABASE_URL = os.getenv(
@@ -41,6 +41,43 @@ class User(Base):
     )
 
 
+class CredentialRecord(Base):
+    __tablename__ = "credentials"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    type: Mapped[str] = mapped_column(Text, nullable=False)
+    data_encrypted: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class MCPServerRecord(Base):
+    __tablename__ = "mcp_servers"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    transport: Mapped[str] = mapped_column(Text, nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    credential_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("credentials.id", ondelete="SET NULL")
+    )
+    tools_cache: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    tools_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class WorkflowRecord(Base):
     __tablename__ = "workflows"
 
@@ -65,6 +102,7 @@ class WorkflowRecord(Base):
 
 class ExecutionRecord(Base):
     __tablename__ = "executions"
+    __table_args__ = (Index("idx_executions_user_created_at", "user_id", text("created_at DESC")),)
 
     id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
@@ -81,13 +119,16 @@ class ExecutionRecord(Base):
     definition_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     idempotency_key: Mapped[str | None] = mapped_column(Text)
     error: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
-    queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Keep the public API's historical field name while indexing the true creation timestamp.
+    queued_at = synonym("created_at")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class NodeRunRecord(Base):
     __tablename__ = "node_runs"
+    __table_args__ = (Index("idx_node_runs_execution", "execution_id"),)
 
     id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")

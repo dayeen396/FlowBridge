@@ -4,17 +4,17 @@ import logging
 import os
 import secrets
 from datetime import datetime, timezone
-from typing import Any
-from urllib.parse import urlencode
+from typing import Any, Literal
+from urllib.parse import urlencode, urlsplit
 from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
@@ -29,12 +29,18 @@ from app.contracts import (
     parse_workflow,
 )
 from app.database import (
+    CredentialRecord,
     ExecutionRecord,
+    MCPServerRecord,
     NodeRunRecord,
     User,
     WorkflowRecord,
     get_db,
+    SessionLocal,
 )
+from app.credentials import encrypt_credential
+from app.credentials import DatabaseCredentialStore
+from app.mcp_client import discover_tools
 from app.worker import celery_app
 
 logger = logging.getLogger("flowbridge.api")
@@ -54,6 +60,29 @@ api = APIRouter(prefix="/api")
 class RunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     data: dict[str, Any] | None = None
+
+
+class CredentialRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    type: Literal["smtp", "mcp_auth"] = "smtp"
+    data: dict[str, Any]
+
+
+class MCPServerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    transport: Literal["streamable_http", "sse"]
+    url: str
+    credential_id: UUID | None = None
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+            raise ValueError("URL must be an HTTP(S) URL without embedded credentials or a fragment")
+        return value
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -176,6 +205,7 @@ def _public_workflow(workflow: WorkflowRecord, *, include_definition: bool) -> d
     if include_definition:
         result["definition"] = workflow.definition
         result["webhook_url"] = f"/api/hooks/{workflow.webhook_token}"
+        result["webhook_token"] = workflow.webhook_token
     return result
 
 
@@ -519,6 +549,202 @@ def run_workflow(
         db.commit()
         raise HTTPException(status_code=503, detail="execution could not be queued") from None
     return {"execution_id": str(execution.id)}
+
+
+def _enqueue_execution(db: Session, execution: ExecutionRecord, user_id: UUID) -> None:
+    try:
+        celery_app.send_task("app.worker.run_execution", args=[str(execution.id), str(user_id)])
+    except Exception:
+        logger.exception("Could not enqueue execution %s", execution.id)
+        execution.status = "failed"
+        execution.error = {"code": "INTERNAL", "message": "execution could not be queued", "retryable": False, "details": {}}
+        execution.finished_at = datetime.now(timezone.utc)
+        db.commit()
+        raise HTTPException(status_code=503, detail="execution could not be queued") from None
+
+
+@api.api_route("/hooks/{token}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], status_code=202, tags=["triggers"])
+async def webhook_trigger(token: str, request: Request, db: Session = Depends(get_db)) -> dict[str, str]:
+    workflow_record = db.scalar(select(WorkflowRecord).where(WorkflowRecord.webhook_token == token, WorkflowRecord.is_active.is_(True)))
+    if workflow_record is None:
+        raise HTTPException(status_code=404, detail="webhook not found")
+    workflow = parse_workflow(workflow_record.definition)
+    trigger = next(node for node in workflow.nodes if NODE_TYPE_SPECS[node.type].is_trigger)
+    if trigger.type != NodeType.WEBHOOK:
+        raise HTTPException(status_code=404, detail="webhook not found")
+    allowed_method = trigger.params.get("http_method", "POST")
+    if request.method != allowed_method:
+        raise HTTPException(status_code=405, detail=f"webhook only accepts {allowed_method}", headers={"Allow": allowed_method})
+    try:
+        raw_body = await request.body()
+        body_data = await request.json() if raw_body else {}
+    except (ValueError, UnicodeDecodeError):
+        body_data = raw_body.decode("utf-8", errors="replace")
+    payload = TriggerPayload(type=TriggerType.WEBHOOK, data={
+        "method": request.method,
+        "headers": dict(request.headers),
+        "query": dict(request.query_params),
+        "body": body_data,
+    })
+    key = request.headers.get("Idempotency-Key")
+    if key is not None and (not key.strip() or len(key) > 255):
+        raise HTTPException(status_code=422, detail="Idempotency-Key must contain 1 to 255 characters")
+    execution = ExecutionRecord(
+        workflow_id=workflow_record.id,
+        user_id=workflow_record.user_id,
+        status="queued",
+        trigger_type="webhook",
+        trigger_payload=payload.model_dump(mode="json"),
+        definition_snapshot=workflow.model_dump(mode="json"),
+        idempotency_key=key,
+    )
+    db.add(execution)
+    try:
+        db.commit()
+        db.refresh(execution)
+    except IntegrityError:
+        db.rollback()
+        if key:
+            existing = db.scalar(select(ExecutionRecord).where(ExecutionRecord.workflow_id == workflow_record.id, ExecutionRecord.idempotency_key == key))
+            if existing is not None:
+                return {"execution_id": str(existing.id)}
+        raise HTTPException(status_code=503, detail="could not queue webhook") from None
+    _enqueue_execution(db, execution, workflow_record.user_id)
+    return {"execution_id": str(execution.id)}
+
+
+@api.post("/workflows/{workflow_id}/webhook-token/rotate", tags=["workflows"])
+def rotate_webhook_token(workflow_id: UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, str]:
+    record = db.scalar(select(WorkflowRecord).where(WorkflowRecord.id == workflow_id, WorkflowRecord.user_id == user.id))
+    if record is None:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    record.webhook_token = secrets.token_urlsafe(32)
+    db.commit()
+    return {"webhook_url": f"/api/hooks/{record.webhook_token}", "webhook_token": record.webhook_token}
+
+
+@api.get("/credentials", tags=["credentials"])
+def list_credentials(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, list[dict[str, str]]]:
+    records = db.scalars(select(CredentialRecord).where(CredentialRecord.user_id == user.id).order_by(CredentialRecord.name)).all()
+    return {"items": [{"id": str(r.id), "name": r.name, "type": r.type} for r in records]}
+
+
+@api.post("/credentials", status_code=201, tags=["credentials"])
+def create_credential(payload: CredentialRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, str]:
+    if not payload.name.strip() or payload.type != "smtp":
+        raise HTTPException(status_code=422, detail="credential name is required and type must be smtp")
+    record = CredentialRecord(user_id=user.id, name=payload.name.strip(), type=payload.type, data_encrypted=encrypt_credential(payload.data))
+    db.add(record)
+    try:
+        db.commit()
+        db.refresh(record)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="a credential with that name already exists") from None
+    return {"id": str(record.id), "name": record.name, "type": record.type}
+
+
+@api.delete("/credentials/{credential_id}", status_code=204, tags=["credentials"])
+def delete_credential(credential_id: UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> Response:
+    record = db.scalar(select(CredentialRecord).where(CredentialRecord.id == credential_id, CredentialRecord.user_id == user.id))
+    if record is None:
+        raise HTTPException(status_code=404, detail="credential not found")
+    db.delete(record)
+    db.commit()
+    return Response(status_code=204)
+
+
+async def _discover_for_user(user_id: UUID, url: str, transport: str, credential_id: UUID | None) -> list[dict[str, Any]]:
+    credential = None
+    if credential_id is not None:
+        with SessionLocal() as db:
+            credential_record = db.scalar(select(CredentialRecord).where(
+                CredentialRecord.id == credential_id,
+                CredentialRecord.user_id == user_id,
+                CredentialRecord.type == "mcp_auth",
+            ))
+        if credential_record is None:
+            raise HTTPException(status_code=422, detail="MCP auth credential was not found")
+        credential = await DatabaseCredentialStore(str(user_id)).get(str(credential_id))
+    try:
+        return await discover_tools({"url": url, "transport": transport}, credential)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.info("MCP discovery failed for user %s: %s", user_id, exc)
+        raise HTTPException(status_code=502, detail="could not connect to MCP server or read its tools") from None
+
+
+def _public_mcp_server(record: MCPServerRecord) -> dict[str, Any]:
+    return {
+        "id": str(record.id),
+        "name": record.name,
+        "transport": record.transport,
+        "url": record.url,
+        "credential_id": str(record.credential_id) if record.credential_id else None,
+        "tools_cache": record.tools_cache or [],
+        "tools_refreshed_at": record.tools_refreshed_at.isoformat() if record.tools_refreshed_at else None,
+    }
+
+
+@api.get("/mcp-servers", tags=["mcp"])
+def list_mcp_servers(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, list[dict[str, Any]]]:
+    records = db.scalars(select(MCPServerRecord).where(MCPServerRecord.user_id == user.id).order_by(MCPServerRecord.name)).all()
+    return {"items": [_public_mcp_server(record) for record in records]}
+
+
+@api.post("/mcp-servers", status_code=201, tags=["mcp"])
+async def create_mcp_server(payload: MCPServerRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    if not payload.name.strip():
+        raise HTTPException(status_code=422, detail="MCP server name is required")
+    tools = await _discover_for_user(user.id, payload.url, payload.transport, payload.credential_id)
+    record = MCPServerRecord(
+        user_id=user.id,
+        name=payload.name.strip(),
+        transport=payload.transport,
+        url=payload.url,
+        credential_id=payload.credential_id,
+        tools_cache=tools,
+        tools_refreshed_at=datetime.now(timezone.utc),
+    )
+    db.add(record)
+    try:
+        db.commit()
+        db.refresh(record)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="an MCP server with that name already exists") from None
+    return _public_mcp_server(record)
+
+
+@api.delete("/mcp-servers/{server_id}", status_code=204, tags=["mcp"])
+def delete_mcp_server(server_id: UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> Response:
+    record = db.scalar(select(MCPServerRecord).where(MCPServerRecord.id == server_id, MCPServerRecord.user_id == user.id))
+    if record is None:
+        raise HTTPException(status_code=404, detail="MCP server not found")
+    db.delete(record)
+    db.commit()
+    return Response(status_code=204)
+
+
+@api.post("/mcp-servers/{server_id}/refresh", tags=["mcp"])
+async def refresh_mcp_server(server_id: UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    record = db.scalar(select(MCPServerRecord).where(MCPServerRecord.id == server_id, MCPServerRecord.user_id == user.id))
+    if record is None:
+        raise HTTPException(status_code=404, detail="MCP server not found")
+    record.tools_cache = await _discover_for_user(user.id, record.url, record.transport, record.credential_id)
+    record.tools_refreshed_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(record)
+    return _public_mcp_server(record)
+
+
+@api.get("/mcp-servers/{server_id}/tools", tags=["mcp"])
+def list_mcp_server_tools(server_id: UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict[str, Any]]:
+    record = db.scalar(select(MCPServerRecord).where(MCPServerRecord.id == server_id, MCPServerRecord.user_id == user.id))
+    if record is None:
+        raise HTTPException(status_code=404, detail="MCP server not found")
+    return record.tools_cache or []
 
 
 @api.get("/workflows/{workflow_id}/executions", tags=["executions"])

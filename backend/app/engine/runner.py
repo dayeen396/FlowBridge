@@ -288,7 +288,7 @@ class WorkflowEngine:
             error = node_result.error
             if error is None or not error.retryable or attempt == node.retry.max_attempts:
                 return node_result, attempt, history
-            delay = node.retry.backoff_seconds * node.retry.backoff_multiplier ** (attempt - 1)
+            delay = node.retry.backoff_seconds * node.retry.backoff_multiplier ** (attempt - 2)
             if delay:
                 await asyncio.sleep(delay)
 

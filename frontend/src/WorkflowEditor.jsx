@@ -282,9 +282,38 @@ function JsonField({ name, label, value, isArray, isAny, onChange, onValidityCha
   );
 }
 
-function NodeInspector({ node, onUpdate, onDelete, invalidFields, onValidityChange }) {
+function schemaDefault(schema = {}) {
+  if (schema.anyOf?.length) schema = schema.anyOf.find((candidate) => candidate.type !== "null") ?? schema.anyOf[0];
+  if (schema.oneOf?.length) schema = schema.oneOf.find((candidate) => candidate.type !== "null") ?? schema.oneOf[0];
+  if (Object.hasOwn(schema, "default")) return schema.default;
+  if (schema.enum?.length) return schema.enum[0];
+  if (schema.type === "object") {
+    const required = new Set(schema.required ?? []);
+    return Object.fromEntries(Object.entries(schema.properties ?? {}).filter(([key]) => required.has(key)).map(([key, value]) => [key, schemaDefault(value)]));
+  }
+  if (schema.type === "array") return [];
+  if (schema.type === "boolean") return false;
+  if (["integer", "number"].includes(schema.type)) return 0;
+  return "";
+}
+
+function SchemaArgumentField({ name, schema = {}, value, onChange }) {
+  if (schema.anyOf?.length) schema = schema.anyOf.find((candidate) => candidate.type !== "null") ?? schema.anyOf[0];
+  if (schema.oneOf?.length) schema = schema.oneOf.find((candidate) => candidate.type !== "null") ?? schema.oneOf[0];
+  const label = schema.title ?? name.replaceAll("_", " ");
+  if (schema.enum) return <label className="field"><span>{label}</span><select value={JSON.stringify(value)} onChange={(event) => onChange(JSON.parse(event.target.value))}>{schema.enum.map((item, index) => <option key={index} value={JSON.stringify(item)}>{String(item)}</option>)}</select>{schema.description && <small>{schema.description}</small>}</label>;
+  if (schema.type === "object") return <fieldset className="schema-object"><legend>{label}</legend>{schema.description && <small>{schema.description}</small>}{Object.entries(schema.properties ?? {}).map(([child, childSchema]) => <SchemaArgumentField key={child} name={child} schema={childSchema} value={value?.[child] ?? schemaDefault(childSchema)} onChange={(next) => onChange({ ...(value ?? {}), [child]: next })} />)}</fieldset>;
+  if (schema.type === "array") return <div className="schema-array"><span>{label}</span>{schema.description && <small>{schema.description}</small>}{(Array.isArray(value) ? value : []).map((item, index) => <div className="schema-array-item" key={index}><SchemaArgumentField name={`${name} ${index + 1}`} schema={schema.items ?? {}} value={item} onChange={(next) => onChange(value.map((entry, itemIndex) => itemIndex === index ? next : entry))} /><button className="danger-quiet" type="button" onClick={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))}>Remove</button></div>)}<button className="button secondary compact" type="button" onClick={() => onChange([...(Array.isArray(value) ? value : []), schemaDefault(schema.items ?? {})])}>Add item</button></div>;
+  if (schema.type === "boolean") return <label className="toggle-field"><span>{label}</span><input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} /></label>;
+  if (["integer", "number"].includes(schema.type)) return <label className="field"><span>{label}</span><input type="number" min={schema.minimum} max={schema.maximum} step={schema.type === "integer" ? 1 : "any"} value={value ?? ""} onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))} />{schema.description && <small>{schema.description}</small>}</label>;
+  return <label className="field"><span>{label}</span>{schema.format === "textarea" || schema.description?.length > 100 ? <textarea rows={3} value={value ?? ""} onChange={(event) => onChange(event.target.value)} /> : <input type="text" value={value ?? ""} onChange={(event) => onChange(event.target.value)} />}{schema.description && <small>{schema.description}</small>}</label>;
+}
+
+function NodeInspector({ node, onUpdate, onDelete, invalidFields, onValidityChange, credentials, onManageCredentials, mcpServers, onManageMcpServers }) {
   const spec = node.data.spec;
   const properties = spec?.params_schema?.properties ?? {};
+  const selectedServer = mcpServers.find((server) => server.id === node.data.params.server_id);
+  const selectedTool = selectedServer?.tools_cache?.find((tool) => tool.name === node.data.params.tool_name);
   return (
     <aside className="inspector">
       <div className="inspector-header">
@@ -305,7 +334,19 @@ function NodeInspector({ node, onUpdate, onDelete, invalidFields, onValidityChan
         </label>
         <div className="divider-label"><span>Parameters</span></div>
         {Object.entries(properties).map(([name, schema]) => (
-          <ParamField
+          name === "credential_id" ? <label className="field" key={name}>
+            <span>SMTP credential</span>
+            <select value={node.data.params[name] ?? ""} onChange={(event) => onUpdate({ params: { ...node.data.params, [name]: event.target.value } })}>
+              <option value="">Choose a credential</option>
+              {credentials.filter((credential) => credential.type === "smtp").map((credential) => <option key={credential.id} value={credential.id}>{credential.name}</option>)}
+            </select>
+            <button className="button secondary compact" type="button" onClick={onManageCredentials}>Manage email credentials</button>
+          </label> : node.data.nodeType === "mcp_tool" && name === "server_id" ? <label className="field" key={name}>
+            <span>MCP server</span><select value={node.data.params.server_id ?? ""} onChange={(event) => { const server = mcpServers.find((item) => item.id === event.target.value); const firstTool = server?.tools_cache?.[0]; onUpdate({ params: { ...node.data.params, server_id: event.target.value, tool_name: firstTool?.name ?? "", arguments: schemaDefault(firstTool?.input_schema ?? { type: "object", properties: {} }) } }); }}><option value="">Choose a server</option>{mcpServers.map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}</select>
+            <button className="button secondary compact" type="button" onClick={onManageMcpServers}>Manage MCP servers</button>
+          </label> : node.data.nodeType === "mcp_tool" && name === "tool_name" ? <label className="field" key={name}>
+            <span>MCP tool</span><select value={node.data.params.tool_name ?? ""} disabled={!selectedServer} onChange={(event) => { const tool = selectedServer?.tools_cache?.find((item) => item.name === event.target.value); onUpdate({ params: { ...node.data.params, tool_name: event.target.value, arguments: schemaDefault(tool?.input_schema ?? { type: "object", properties: {} }) } }); }}><option value="">Choose a tool</option>{(selectedServer?.tools_cache ?? []).map((tool) => <option key={tool.name} value={tool.name}>{tool.name}</option>)}</select>{selectedTool?.description && <small>{selectedTool.description}</small>}
+          </label> : node.data.nodeType === "mcp_tool" && name === "arguments" ? null : <ParamField
             key={`${node.id}:${name}`}
             name={name}
             schema={schema}
@@ -315,6 +356,7 @@ function NodeInspector({ node, onUpdate, onDelete, invalidFields, onValidityChan
             onValidityChange={(fieldName, invalid) => onValidityChange(`${node.id}:${fieldName}`, invalid)}
           />
         ))}
+        {node.data.nodeType === "mcp_tool" && selectedTool && <div className="tool-arguments"><div className="divider-label"><span>Tool arguments</span></div>{Object.entries(selectedTool.input_schema?.properties ?? {}).map(([argName, schema]) => <SchemaArgumentField key={`${selectedServer.id}:${selectedTool.name}:${argName}`} name={argName} schema={schema} value={node.data.params.arguments?.[argName] ?? schemaDefault(schema)} onChange={(value) => onUpdate({ params: { ...node.data.params, arguments: { ...(node.data.params.arguments ?? {}), [argName]: value } } })} />)}</div>}
         {Object.keys(properties).length === 0 && <p className="muted-copy">This node has no configurable parameters.</p>}
         <div className="divider-label"><span>Execution</span></div>
         <label className="field">
@@ -368,18 +410,30 @@ export default function WorkflowEditor({ workflowId, onBack, onOpenRun, onWorkfl
   const [notice, setNotice] = useState(null);
   const [jsonValidity, setJsonValidity] = useState({});
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [credentials, setCredentials] = useState([]);
+  const [credentialDialog, setCredentialDialog] = useState(false);
+  const [credentialForm, setCredentialForm] = useState({ name: "", host: "", port: "587", username: "", password: "", from_address: "", starttls: true });
+  const [credentialSaving, setCredentialSaving] = useState(false);
+  const [mcpServers, setMcpServers] = useState([]);
+  const [mcpDialog, setMcpDialog] = useState(false);
+  const [mcpSaving, setMcpSaving] = useState(false);
+  const [mcpForm, setMcpForm] = useState({ name: "", url: "", transport: "streamable_http", bearer_token: "" });
 
   useEffect(() => {
     let active = true;
     async function load() {
       setLoading(true);
       try {
-        const [nodeCatalog, saved] = await Promise.all([
+        const [nodeCatalog, saved, credentialResponse, mcpResponse] = await Promise.all([
           apiRequest("/node-types"),
           workflowId === "new" ? Promise.resolve(null) : apiRequest(`/workflows/${workflowId}`),
+          apiRequest("/credentials"),
+          apiRequest("/mcp-servers"),
         ]);
         if (!active) return;
         setCatalog(nodeCatalog);
+        setCredentials(credentialResponse.items ?? []);
+        setMcpServers(mcpResponse.items ?? []);
         if (saved) {
           setRecord(saved);
           setName(saved.name);
@@ -544,6 +598,89 @@ export default function WorkflowEditor({ workflowId, onBack, onOpenRun, onWorkfl
     }
   }
 
+  async function saveCredential(event) {
+    event.preventDefault();
+    setCredentialSaving(true);
+    try {
+      const created = await apiRequest("/credentials", { method: "POST", body: {
+        name: credentialForm.name,
+        type: "smtp",
+        data: { host: credentialForm.host, port: Number(credentialForm.port), username: credentialForm.username, password: credentialForm.password, from_address: credentialForm.from_address || undefined, starttls: credentialForm.starttls },
+      } });
+      setCredentials((items) => [...items, created].sort((a, b) => a.name.localeCompare(b.name)));
+      updateSelected({ params: { ...selectedNode.data.params, credential_id: created.id } });
+      setCredentialDialog(false);
+      setCredentialForm({ name: "", host: "", port: "587", username: "", password: "", from_address: "", starttls: true });
+      setNotice({ kind: "success", text: "SMTP credential saved securely" });
+    } catch (error) {
+      setNotice({ kind: "error", text: getErrorMessage(error) });
+    } finally {
+      setCredentialSaving(false);
+    }
+  }
+
+  async function createMcpServer(event) {
+    event.preventDefault();
+    setMcpSaving(true);
+    let createdCredentialId = null;
+    try {
+      let credentialId = null;
+      if (mcpForm.bearer_token) {
+        const authCredential = await apiRequest("/credentials", { method: "POST", body: {
+          name: `${mcpForm.name.trim()} auth`, type: "mcp_auth", data: { bearer_token: mcpForm.bearer_token },
+        } });
+        credentialId = authCredential.id;
+        createdCredentialId = authCredential.id;
+        setCredentials((items) => [...items, authCredential]);
+      }
+      const created = await apiRequest("/mcp-servers", { method: "POST", body: {
+        name: mcpForm.name, url: mcpForm.url, transport: mcpForm.transport, credential_id: credentialId,
+      } });
+      setMcpServers((items) => [...items, created].sort((a, b) => a.name.localeCompare(b.name)));
+      setMcpForm({ name: "", url: "", transport: "streamable_http", bearer_token: "" });
+      setNotice({ kind: "success", text: `Connected to MCP server; cached ${created.tools_cache.length} tools` });
+    } catch (error) {
+      if (createdCredentialId) {
+        try { await apiRequest(`/credentials/${createdCredentialId}`, { method: "DELETE" }); } catch { /* cleanup is best effort */ }
+        setCredentials((items) => items.filter((credential) => credential.id !== createdCredentialId));
+      }
+      setNotice({ kind: "error", text: getErrorMessage(error) });
+    } finally {
+      setMcpSaving(false);
+    }
+  }
+
+  async function refreshMcpServer(serverId) {
+    try {
+      const refreshed = await apiRequest(`/mcp-servers/${serverId}/refresh`, { method: "POST" });
+      setMcpServers((items) => items.map((item) => item.id === serverId ? refreshed : item));
+      setNotice({ kind: "success", text: `Refreshed ${refreshed.tools_cache.length} MCP tools` });
+    } catch (error) {
+      setNotice({ kind: "error", text: getErrorMessage(error) });
+    }
+  }
+
+  async function deleteMcpServer(serverId) {
+    try {
+      await apiRequest(`/mcp-servers/${serverId}`, { method: "DELETE" });
+      setMcpServers((items) => items.filter((item) => item.id !== serverId));
+      setNotice({ kind: "success", text: "MCP server removed" });
+    } catch (error) {
+      setNotice({ kind: "error", text: getErrorMessage(error) });
+    }
+  }
+
+  async function rotateWebhookToken() {
+    if (!record) return;
+    try {
+      const updated = await apiRequest(`/workflows/${record.id}/webhook-token/rotate`, { method: "POST" });
+      setRecord((current) => ({ ...current, webhook_url: updated.webhook_url, webhook_token: updated.webhook_token }));
+      setNotice({ kind: "success", text: "Webhook token rotated" });
+    } catch (error) {
+      setNotice({ kind: "error", text: getErrorMessage(error) });
+    }
+  }
+
   if (loading) {
     return <div className="center-state"><LoaderCircle className="spin" size={22} /> Loading workflow…</div>;
   }
@@ -568,6 +705,7 @@ export default function WorkflowEditor({ workflowId, onBack, onOpenRun, onWorkfl
           </span>
         </div>
         <div className="editor-actions">
+          <button className="button secondary save-button" onClick={() => setMcpDialog(true)}><PlugZap size={16} /><span>MCP servers</span></button>
           <button className="button secondary save-button" onClick={saveWorkflow} disabled={saving || invalidFields.length > 0}>
             {saving ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}
             <span>{saving ? "Saving" : "Save"}</span>
@@ -608,6 +746,11 @@ export default function WorkflowEditor({ workflowId, onBack, onOpenRun, onWorkfl
           <div className="canvas-toolbar">
             <button className="canvas-tool active"><span className="canvas-tool-dot" /> Workflow</button>
             <div className="canvas-toolbar-right">
+              {record?.webhook_url && nodes.some((node) => node.data.nodeType === "webhook") && <div className="webhook-chip">
+                <span>Webhook</span><code>{window.location.origin}{record.webhook_url}</code>
+                <button type="button" onClick={async () => { await navigator.clipboard.writeText(`${window.location.origin}${record.webhook_url}`); setNotice({ kind: "success", text: "Webhook URL copied" }); }}>Copy URL</button>
+                <button type="button" onClick={rotateWebhookToken}>Rotate</button>
+              </div>}
               <span className="canvas-count">{nodes.length} nodes <span>·</span> {edges.length} connections</span>
               <button className="button secondary compact add-node-mobile" onClick={() => setLibraryOpen(true)}><Plus size={15} /> Add node</button>
             </div>
@@ -653,6 +796,10 @@ export default function WorkflowEditor({ workflowId, onBack, onOpenRun, onWorkfl
             onDelete={deleteSelected}
             invalidFields={invalidFields}
             onValidityChange={setFieldValidity}
+            credentials={credentials}
+            onManageCredentials={() => setCredentialDialog(true)}
+            mcpServers={mcpServers}
+            onManageMcpServers={() => setMcpDialog(true)}
           />
         )}
       </div>
@@ -682,6 +829,27 @@ export default function WorkflowEditor({ workflowId, onBack, onOpenRun, onWorkfl
           </div>
         </div>
       )}
+      {credentialDialog && <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCredentialDialog(false); }}>
+        <form className="dialog-card" onSubmit={saveCredential}>
+          <div className="dialog-heading"><div><span className="panel-kicker">EMAIL DELIVERY</span><h2>Add SMTP credential</h2></div><button type="button" className="icon-button" onClick={() => setCredentialDialog(false)} aria-label="Close"><X size={17} /></button></div>
+          {[["name", "Credential name"], ["host", "SMTP host"], ["port", "Port"], ["username", "Username"], ["password", "Password"], ["from_address", "Default from address"]].map(([key, label]) => <label className="field" key={key}><span>{label}</span><input required={key !== "from_address"} type={key === "password" ? "password" : key === "port" ? "number" : "text"} value={credentialForm[key]} onChange={(event) => setCredentialForm((form) => ({ ...form, [key]: event.target.value }))} /></label>)}
+          <label className="toggle-field"><span>Use STARTTLS</span><input type="checkbox" checked={credentialForm.starttls} onChange={(event) => setCredentialForm((form) => ({ ...form, starttls: event.target.checked }))} /></label>
+          <p className="muted-copy">Secrets are encrypted before they are stored and are never shown again.</p>
+          <div className="dialog-actions"><button className="button secondary" type="button" onClick={() => setCredentialDialog(false)}>Cancel</button><button className="button primary" type="submit" disabled={credentialSaving}>{credentialSaving ? "Saving…" : "Save credential"}</button></div>
+        </form>
+      </div>}
+      {mcpDialog && <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setMcpDialog(false); }}>
+        <div className="dialog-card mcp-dialog" role="dialog" aria-modal="true" aria-label="Manage MCP servers">
+          <div className="dialog-heading"><div><span className="panel-kicker">INTEGRATIONS</span><h2>MCP servers</h2></div><button type="button" className="icon-button" onClick={() => setMcpDialog(false)} aria-label="Close"><X size={17} /></button></div>
+          <form onSubmit={createMcpServer}>
+            {[ ["name", "Server name"], ["url", "Server URL"], ["bearer_token", "Bearer token (optional)"] ].map(([key, label]) => <label className="field" key={key}><span>{label}</span><input required={key !== "bearer_token"} type={key === "bearer_token" ? "password" : "text"} placeholder={key === "url" ? "https://mcp.example.com/mcp" : ""} value={mcpForm[key]} onChange={(event) => setMcpForm((form) => ({ ...form, [key]: event.target.value }))} /></label>)}
+            <label className="field"><span>Transport</span><select value={mcpForm.transport} onChange={(event) => setMcpForm((form) => ({ ...form, transport: event.target.value }))}><option value="streamable_http">Streamable HTTP</option><option value="sse">Server-Sent Events (SSE)</option></select></label>
+            <div className="dialog-actions"><button className="button primary" type="submit" disabled={mcpSaving}>{mcpSaving ? "Connecting…" : "Connect and fetch tools"}</button></div>
+          </form>
+          <div className="divider-label"><span>Connected servers</span></div>
+          <div className="mcp-server-list">{mcpServers.length === 0 ? <p className="muted-copy">No MCP servers connected yet.</p> : mcpServers.map((server) => <div className="mcp-server-row" key={server.id}><div><strong>{server.name}</strong><small>{server.transport} · {server.tools_cache.length} tools</small><div className="mcp-tool-names">{server.tools_cache.map((tool) => tool.name).join(", ")}</div></div><button className="button secondary compact" type="button" onClick={() => refreshMcpServer(server.id)}>Refresh</button><button className="danger-quiet" type="button" onClick={() => deleteMcpServer(server.id)}>Delete</button></div>)}</div>
+        </div>
+      </div>}
       {notice && <div className={`toast ${notice.kind}`} role="status">{notice.kind === "success" ? <Check size={16} /> : <CircleHelp size={16} />}{notice.text}</div>}
     </div>
   );

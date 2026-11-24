@@ -10,6 +10,7 @@ from sqlalchemy import select, update
 from app.contracts import ErrorCode, ExecutionStatus, NodeRunStatus, TriggerPayload, parse_workflow
 from app.database import ExecutionRecord, NodeRunRecord, SessionLocal
 from app.engine import WorkflowEngine
+from app.credentials import DatabaseCredentialStore
 
 logger = logging.getLogger("flowbridge.worker")
 
@@ -55,20 +56,36 @@ def run_execution(execution_id: str, user_id: str) -> dict[str, str]:
 
     try:
         workflow = parse_workflow(definition)
-        run_result = asyncio.run(
+        run_timeout = max(1, int(os.getenv("FLOWBRIDGE_RUN_TIMEOUT_SECONDS", "3600")))
+        run_result = asyncio.run(asyncio.wait_for(
             WorkflowEngine().run(
                 workflow,
                 TriggerPayload.model_validate(trigger_payload),
                 execution_id=execution_id,
                 workflow_id=workflow_id,
                 user_id=user_id,
-            )
-        )
+                credentials=DatabaseCredentialStore(user_id),
+            ),
+            timeout=run_timeout,
+        ))
         final_status = run_result.status.value
         node_results = run_result.node_results
         attempt_results = run_result.attempt_results
         node_inputs = run_result.node_inputs
         node_statuses = run_result.node_statuses
+    except asyncio.TimeoutError:
+        logger.error("Execution %s exceeded its %ss run timeout", execution_id, run_timeout)
+        final_status = ExecutionStatus.FAILED.value
+        node_results = {}
+        attempt_results = {}
+        node_inputs = {}
+        node_statuses = {}
+        execution_error = {
+            "code": ErrorCode.TIMEOUT.value,
+            "message": f"execution exceeded its {run_timeout}s timeout",
+            "retryable": False,
+            "details": {},
+        }
     except Exception:
         logger.exception("Execution %s failed before the engine returned a result", execution_id)
         final_status = ExecutionStatus.FAILED.value

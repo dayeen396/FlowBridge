@@ -1,4 +1,4 @@
--- FlowBridge reference schema (PostgreSQL 15+). Step 1 turns this into Alembic migration 0001.
+-- FlowBridge reference schema (PostgreSQL 15+), after all Alembic migrations.
 -- Rules: UUID primary keys, timestamptz everywhere, every user-owned row carries user_id,
 -- all workflow/node payloads are JSONB.
 
@@ -17,7 +17,7 @@ CREATE TABLE users (
 );
 
 -- ------------------------------------------------------------ credentials
--- Encrypted at the application layer (Fernet, key from FLOWBRIDGE_SECRET_KEY). Never returned by the API.
+-- Encrypted at the application layer (Fernet, key derived from FLOWBRIDGE_SECRET_KEY). Never returned by the API.
 CREATE TABLE credentials (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -72,12 +72,12 @@ CREATE TABLE executions (
     definition_snapshot jsonb       NOT NULL,              -- edits after queueing never change a run
     idempotency_key     text,
     error               jsonb,                             -- NodeError-shaped, set when status = failed
-    queued_at           timestamptz NOT NULL DEFAULT now(),
+    created_at          timestamptz NOT NULL DEFAULT now(),
     started_at          timestamptz,
     finished_at         timestamptz
 );
-CREATE INDEX idx_executions_user_created ON executions (user_id, queued_at DESC);
-CREATE INDEX idx_executions_workflow     ON executions (workflow_id, queued_at DESC);
+CREATE INDEX idx_executions_user_created_at ON executions (user_id, created_at DESC);
+CREATE INDEX idx_executions_workflow     ON executions (workflow_id, created_at DESC);
 CREATE INDEX idx_executions_status       ON executions (status) WHERE status IN ('queued', 'running');
 CREATE UNIQUE INDEX uq_executions_idempotency ON executions (workflow_id, idempotency_key)
     WHERE idempotency_key IS NOT NULL;

@@ -29,6 +29,7 @@ services:
       GITHUB_REDIRECT_URI: ${GITHUB_REDIRECT_URI:-http://localhost:${FLOWBRIDGE_API_PORT:-8000}/api/auth/github/callback}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:${FLOWBRIDGE_FRONTEND_PORT:-5173}}
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      FLOWBRIDGE_RUN_TIMEOUT_SECONDS: ${FLOWBRIDGE_RUN_TIMEOUT_SECONDS:-3600}
     ports:
       - "127.0.0.1:${FLOWBRIDGE_API_PORT:-8000}:8000"
     depends_on:
@@ -50,6 +51,8 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-flowbridge}:${POSTGRES_PASSWORD:-flowbridge}@postgres:5432/${POSTGRES_DB:-flowbridge}
       REDIS_URL: redis://redis:6379/0
+      FLOWBRIDGE_SECRET_KEY: ${FLOWBRIDGE_SECRET_KEY:-local-dev-only-change-this-secret}
+      FLOWBRIDGE_RUN_TIMEOUT_SECONDS: ${FLOWBRIDGE_RUN_TIMEOUT_SECONDS:-3600}
     depends_on:
       api:
         condition: service_healthy

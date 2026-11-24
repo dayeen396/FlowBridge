@@ -94,6 +94,7 @@ Codes: `VALIDATION_ERROR`, `EXPRESSION_ERROR`, `HTTP_ERROR`, `EMAIL_ERROR`, `MCP
 * After the last attempt fails: `on_error = "stop"` marks the execution `failed`; `"continue"` leaves the node
   `failed`, the execution carries on, and nodes reachable only through it are skipped.
 * `timeout_seconds` applies per attempt and produces a retryable `TIMEOUT`.
+* The worker also caps total workflow duration with `FLOWBRIDGE_RUN_TIMEOUT_SECONDS` (default 3600).
 
 ## 5. Node types (v1)
 
@@ -163,8 +164,8 @@ node_run:   pending -> running -> success | failed | skipped
 
 * The API creates the execution as `queued` (with `definition_snapshot` and `trigger_payload`) and enqueues its id.
 * A worker moves it to `running`, executes nodes in `topological_order`, then sets the final status.
-* The worker only touches an execution whose status is `queued`, so a duplicated job never runs twice.
-* `idempotency_key` (optional, from the `Idempotency-Key` header on webhooks) is unique per workflow.
+* The worker atomically changes `queued` to `running`, so a redelivered job never starts an already claimed execution twice.
+* `idempotency_key` (optional, from the `Idempotency-Key` header on webhooks) is unique per workflow; duplicate requests return the original execution id.
 
 ## 10. Database
 
@@ -174,8 +175,10 @@ See `db/schema.sql`. Tables: `users`, `credentials`, `mcp_servers`, `workflows`,
 * UUID keys and `timestamptz` everywhere. Every user-owned row has `user_id`; every query filters by it.
 * `definition` and run payloads are JSONB, so the graph format can grow without migrations.
 * `executions.definition_snapshot` freezes the graph at queue time.
+* `executions.created_at` is the creation timestamp (serialized as `queued_at` for API compatibility); it is indexed with `user_id`.
+* `node_runs.execution_id` is indexed for run-detail reads.
 * `workflows.version` is bumped on each save; the API rejects a save whose `version` is stale (409).
-* Credentials are encrypted in the application (Fernet) and never returned by the API.
+* Credentials are encrypted in the application (Fernet, key derived from `FLOWBRIDGE_SECRET_KEY`) and never returned by the API.
 * Retention: v1 keeps everything. A cleanup job for old `node_runs` is future work.
 
 ## 11. Decisions log

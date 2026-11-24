@@ -1,4 +1,7 @@
 import asyncio
+import ipaddress
+import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -39,6 +42,14 @@ def edge(edge_id, source, target, source_handle="main"):
 
 def run(workflow, trigger_payload=None):
     return asyncio.run(WorkflowEngine().run(workflow, trigger_payload))
+
+
+@pytest.fixture(autouse=True)
+def public_test_dns(monkeypatch):
+    async def resolve(_host, _port):
+        return [ipaddress.ip_address("93.184.216.34")]
+
+    monkeypatch.setattr("app.nodes.builtin._resolve_host_addresses", resolve)
 
 
 def test_runs_nodes_in_topological_order_and_passes_outputs():
@@ -206,7 +217,11 @@ def test_http_request_returns_status_headers_and_json_body(monkeypatch):
     def client_factory(**kwargs):
         return original_client(
             transport=httpx.MockTransport(
-                lambda _request: httpx.Response(200, json={"ok": True}, headers={"x-test": "yes"})
+                lambda request: (
+                    httpx.Response(200, json={"ok": True}, headers={"x-test": "yes"})
+                    if request.url.host == "93.184.216.34"
+                    else httpx.Response(500, text="request was not pinned")
+                )
             ),
             **kwargs,
         )
@@ -226,6 +241,60 @@ def test_http_request_returns_status_headers_and_json_body(monkeypatch):
     assert response["status"] == 200
     assert response["body"] == {"ok": True}
     assert response["headers"]["x-test"] == "yes"
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1/", "http://169.254.169.254/latest/meta-data/", "http://[::1]/"])
+def test_http_request_blocks_private_literal_addresses(url):
+    workflow = graph(
+        [node("start", "manual_trigger"), node("request", "http_request", {"url": url})],
+        [edge("e1", "start", "request")],
+    )
+
+    result = run(workflow)
+
+    assert result.status == ExecutionStatus.FAILED
+    assert result.node_results["request"].error.code == ErrorCode.HTTP_ERROR
+    assert "public IP" in result.node_results["request"].error.message
+
+
+def test_http_request_blocks_hostname_with_any_private_dns_answer(monkeypatch):
+    async def mixed_answers(_host, _port):
+        return [ipaddress.ip_address("93.184.216.34"), ipaddress.ip_address("10.0.0.7")]
+
+    monkeypatch.setattr("app.nodes.builtin._resolve_host_addresses", mixed_answers)
+    workflow = graph(
+        [node("start", "manual_trigger"), node("request", "http_request", {"url": "https://service.test/"})],
+        [edge("e1", "start", "request")],
+    )
+
+    result = run(workflow)
+
+    assert result.status == ExecutionStatus.FAILED
+    assert result.node_results["request"].error.code == ErrorCode.HTTP_ERROR
+
+
+def test_http_request_does_not_follow_redirects(monkeypatch):
+    original_client = httpx.AsyncClient
+    calls = []
+
+    def client_factory(**kwargs):
+        def handler(request):
+            calls.append(request)
+            return httpx.Response(302, headers={"location": "http://127.0.0.1/private"})
+
+        return original_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr("app.nodes.builtin.httpx.AsyncClient", client_factory)
+    workflow = graph(
+        [node("start", "manual_trigger"), node("request", "http_request", {"url": "https://service.test/"})],
+        [edge("e1", "start", "request")],
+    )
+
+    result = run(workflow)
+
+    assert result.status == ExecutionStatus.SUCCESS
+    assert result.outputs["request"]["main"].first()["status"] == 302
+    assert len(calls) == 1
 
 
 def test_http_request_retries_retryable_server_errors(monkeypatch):
@@ -350,3 +419,11 @@ def test_webhook_trigger_accepts_contract_payload():
         "body": {"value": 2},
         "seen": True,
     }
+
+
+def test_self_hosted_demo_workflow_routes_high_value_order():
+    demo_path = Path(__file__).resolve().parents[2] / "contracts" / "examples" / "04-order-triage-demo.json"
+    result = run(json.loads(demo_path.read_text()))
+
+    assert result.outputs["high_value"]["main"].first()["priority"] == "review"
+    assert result.node_statuses["standard_value"] == NodeRunStatus.SKIPPED
